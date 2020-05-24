@@ -1,0 +1,116 @@
+{
+  "input_reflectance" : "remote/ang20140625_v2gx_rfl",
+  "input_uncertainty" : "remote/ang20140625_v2gx_uncert",
+  "output_depths"     : "output/ang20140625_v2gx_depths",
+  "output_posterior"  : "output/ang20140625_v2gx_dposts",
+  "output_likelihood" : "output/ang20140625_v2gx_nll",
+  "output_corr"       : "output/ang20140625_v2gx_corr",
+  "library": {
+    "wavelength_file" : "remote/wavelengths.txt",
+    "sources": [
+      {
+        "name":"Alunite_Kaolinite_0",
+        "group":"Alunite",
+        "reflectance_file" : "lib/Alunite50_Kaol50_rfl.txt",
+        "prior": [[1.0,0.1],[0.1,1.0]],
+        "mixing_fraction": 0.5,
+        "features":[
+          {
+             "continuum" : [1436, 1455, 1505, 1524],
+             "constraint_ctm_slope": [0, 1.0],
+             "constraint_ctm": [0.05, 9999]
+          },
+          {
+             "continuum" : [2068, 2099, 2238, 2268],
+             "constraint_ctm": [0.04, 9999]
+          }
+        ]
+      },
+      {
+        "name":"Alunite_0",
+        "group":"Alunite",
+        "reflectance_file" : "lib/Alunite_rfl.txt",
+        "prior": [[1.0,0.1],[0.1,1.0]],
+        "mixing_fraction": 1.0,
+        "features":[
+          {
+             "continuum" : [1436, 1455, 1505, 1524],
+             "constraint_ctm_slope": [0, 1.0],
+             "constraint_ctm": [0.05, 9999]
+          },
+          {
+             "continuum" : [2068, 2099, 2238, 2268],
+             "constraint_ctm": [0.04, 9999]
+          }
+        ]
+      },
+      {
+        "name":"Alunite_Kaolinite_0",
+        "group":"Kaolinite",
+        "reflectance_file" : "lib/Alunite50_Kaol50_rfl.txt",
+        "prior": [[1.0,0.1],[0.1,1.0]],
+        "mixing_fraction": 0.5,
+        "features":[
+          {
+             "continuum" : [1436, 1455, 1505, 1524],
+             "constraint_ctm_slope": [0, 1.0],
+             "constraint_ctm": [0.05, 9999]
+          },
+          {
+             "continuum" : [2068, 2099, 2238, 2268],
+             "constraint_ctm": [0.04, 9999]
+          }
+        ]
+      },
+      {
+        "name":"Hematite_0",
+        "group":"Hematite",
+        "reflectance_file" : "lib/Hematite_rfl.txt",
+        "prior": [[1.0,0.1],[0.1,1.0]],
+        "mixing_fraction": 1.0,
+        "features":[
+          {
+             "continuum" : [443, 473, 611, 641],
+             "constraint_ctm_slope": [0, 1.0],
+             "constraint_ctm": [0.04, 9999]
+          },
+          {
+             "continuum" : [736, 775, 1225, 1264],
+             "constraint_ctm": [0.04, 9999]
+          }
+        ]
+      },
+      {
+        "name":"Goethite_0",
+        "group":"Goethite",
+        "reflectance_file" : "lib/Goethite_rfl.txt",
+        "prior": [[1.0,0.1],[0.1,1.0]],
+        "mixing_fraction": 1.0,
+        "features":[
+          {
+             "continuum" : [416, 457, 562, 595],
+             "constraint_ctm_slope": [0, 1.0],
+             "constraint_ctm": [0.04, 9999]
+          },
+          {
+             "continuum" : [745, 776, 1266, 1296],
+             "constraint_ctm": [0.04, 9999]
+          }
+        ]
+      },
+      {
+        "name":"Kaolinite_0",
+        "group":"Kaolinite",
+        "reflectance_file" : "lib/Kaolinite_rfl.txt",
+        "prior": [[1.0]],
+        "mixing_fraction": 1.0,
+        "features":[
+          {
+             "continuum" : [2078,2108,2237,2267],
+             "constraint_ctm": [0.04, 9999]
+          }
+        ]
+      }
+    ]
+  }
+}
