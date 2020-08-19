@@ -283,11 +283,15 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('config_file')
     parser.add_argument('--level', default='INFO')
+    parser.add_argument('--n_cores', default=-1,help="number of cores to run on. -1 for all, 1 for debug mode")
     args = parser.parse_args()
     logging.basicConfig(format='%(message)s', level=args.level)
 
     # Load a parallel Pool
-    pool = mp.Pool(mp.cpu_count())
+    if args.n_cores == -1:
+        pool = mp.Pool(mp.cpu_count())
+    else:
+        pool = mp.Pool(args.n_cores)
 
     # Load the configuration file.
     config = json.load(open(args.config_file, 'r'))
@@ -296,16 +300,16 @@ def main():
 
     # Get image and wavelengths
     logging.info('Opening input data')
-    rfl_inhdr    = str(config['input_reflectance']+'.hdr')
-    uncert_inhdr = str(config['input_uncertainty']+'.hdr')
-    depth_outhdr = str(config['output_depths']+'.hdr')
-    post_outhdr  = str(config['output_posterior']+'.hdr')
-    nll_outhdr   = str(config['output_likelihood']+'.hdr')
-    corr_outhdr  = str(config['output_corr']+'.hdr')
+    reflectance_input_header    = str(config['input_reflectance']+'.hdr')
+    uncertainty_input_header = str(config['input_uncertainty']+'.hdr')
+    depth_output_header = str(config['output_depths']+'.hdr')
+    posterior_output_header  = str(config['output_posterior']+'.hdr')
+    likelihood_output_header   = str(config['output_likelihood']+'.hdr')
+    corr_output_header  = str(config['output_corr']+'.hdr')
 
-    R = envi.open(rfl_inhdr)
-    meta = R.metadata.copy()
-    U = envi.open(uncert_inhdr)
+    reflectance_ds = envi.open(reflectance_input_header)
+    meta = reflectance_ds.metadata.copy()
+    uncertainty_ds = envi.open(uncertainty_input_header)
 
     # Now that the input images are available, resample wavelengths
     if 'wavelength' in meta:
@@ -327,37 +331,30 @@ def main():
     meta['band names'] = lib.groups()
     meta['data type'] = 4
     meta['interleave'] = 'bip'
-    D = envi.create_image(depth_outhdr, meta, force=True, ext="")
-    P = envi.create_image(post_outhdr,  meta, force=True, ext="")
-    L = envi.create_image(nll_outhdr,   meta, force=True, ext="")
-    C = envi.create_image(corr_outhdr,    meta, force=True, ext="")
+    depth_ds = envi.create_image(depth_output_header, meta, force=True, ext="")
+    posterior_ds = envi.create_image(posterior_output_header,  meta, force=True, ext="")
+    likelihood_ds = envi.create_image(likelihood_output_header,   meta, force=True, ext="")
+    corr_ds = envi.create_image(corr_output_header,    meta, force=True, ext="")
 
-    for r in range(R.shape[0]):
+    for r in range(reflectance_ds.shape[0]):
 
         logging.info('Row %i'%r)
         # We delete the old objects to flush everything to disk, empty cache
-        del R; del U; del D; del P; del L; del C
-        R = envi.open(rfl_inhdr   )
-        U = envi.open(uncert_inhdr)
-        D = envi.open(depth_outhdr)
-        P = envi.open(post_outhdr )
-        L = envi.open(nll_outhdr  )
-        C = envi.open(corr_outhdr )
-        rmm = R.open_memmap(interleave="source", writable=False)
-        umm = U.open_memmap(interleave="source", writable=False)
-        dmm = D.open_memmap(interleave="source", writable=True)
-        pmm = P.open_memmap(interleave="source", writable=True)
-        lmm = L.open_memmap(interleave="source", writable=True)
-        cmm = C.open_memmap(interleave="source", writable=True)
+        reflectance_mm = reflectance_ds.open_memmap(interleave="source", writable=False)
+        uncertainty_mm = uncertainty_ds.open_memmap(interleave="source", writable=False)
+        depth_mm = depth_ds.open_memmap(interleave="source", writable=True)
+        posterior_mm = posterior_ds.open_memmap(interleave="source", writable=True)
+        likelihood_mm = likelihood_ds.open_memmap(interleave="source", writable=True)
+        corr_mm = corr_ds.open_memmap(interleave="source", writable=True)
 
         # Get reflectance subframe
-        sub_rfl    = np.array(rmm[r,:,:], dtype='float32')
-        if R.metadata['interleave'] == 'bil':
+        sub_rfl    = np.array(reflectance_mm[r,:,:], dtype='float32')
+        if reflectance_ds.metadata['interleave'] == 'bil':
             sub_rfl = sub_rfl.T
 
         # Get input uncertainty
-        sub_uncert = np.array(umm[r,:,:], dtype='float32')
-        if U.metadata['interleave'] == 'bil':
+        sub_uncert = np.array(uncertainty_mm[r,:,:], dtype='float32')
+        if uncertainty_ds.metadata['interleave'] == 'bil':
             sub_uncert = sub_uncert.T
 
         # Set-up for parallel.  By convention, we exclude final state
@@ -365,34 +362,24 @@ def main():
         nrfl = sub_rfl.shape[1]
         sub_data = np.stack((sub_rfl, sub_uncert[:, 0:nrfl]), axis=2)
 
-        # Perform the fit
-        sub_depth = np.zeros((sub_rfl.shape[0], lib.nchan()), dtype=np.float32)
-        sub_post  = np.zeros((sub_rfl.shape[0], lib.nchan()), dtype=np.float32)
-        sub_nll   = np.zeros((sub_rfl.shape[0], lib.nchan()), dtype=np.float32)
-        sub_corr  = np.zeros((sub_rfl.shape[0], lib.nchan()), dtype=np.float32)
-
         # Fit in parallel
-        results = pool.map(lib.fit, [sub_data[c, :, :] for c in range(sub_data.shape[0])])
-        results = np.asarray(results)
-
-        # For debugging, use this instead:
-        '''
-        results = []
-        for c in range(sub_data.shape[0]):
-            temp = lib.fit(sub_data[c,:,:])
-            results.append(temp)
-        results = np.asarray(results)
-        '''
-        sub_depth = results[:, 0, :]
-        sub_post  = results[:, 1, :]
-        sub_nll   = results[:, 2, :]
-        sub_corr  = results[:, 3, :]
+        if args.n_cores != 1:
+            results = pool.map(lib.fit, [sub_data[c, :, :] for c in range(sub_data.shape[0])])
+            results = np.asarray(results)
+        else:
+            results = []
+            for c in range(sub_data.shape[0]):
+                temp = lib.fit(sub_data[c,:,:])
+                results.append(temp)
+            results = np.asarray(results)
 
         # Write to output file
-        dmm[r,:,:] = sub_depth
-        pmm[r,:,:] = sub_post
-        lmm[r,:,:] = sub_nll
-        cmm[r,:,:] = sub_corr
+        depth_mm[r,:,:] = results[:, 0, :]
+        posterior_mm[r,:,:] = results[:, 1, :]
+        likelihood_mm[r,:,:] = results[:, 2, :]
+        corr_mm[r,:,:] = results[:, 3, :]
+
+        del reflectance_mm, uncertainty_mm, depth_mm, posterior_mm, likelihood_mm, corr_mm
 
 
 if __name__ == "__main__":
