@@ -15,6 +15,7 @@ import pylab as plt
 import logging
 import pylab as plt
 import multiprocessing as mp
+import ray
 
 
 # Suppress warnings that don't come from us
@@ -275,6 +276,44 @@ class Library():
     def groups(self):
         return self.lib.keys()
 
+@ray.remote
+def run_one_row(r, lib, reflectance_ds, uncertainty_ds, depth_ds, posterior_ds, likelihood_ds, corr_ds):
+    logging.info('Row %i'%r)
+    # We delete the old objects to flush everything to disk, empty cache
+    reflectance_mm = reflectance_ds.open_memmap(interleave="source", writable=False)
+    uncertainty_mm = uncertainty_ds.open_memmap(interleave="source", writable=False)
+    depth_mm = depth_ds.open_memmap(interleave="source", writable=True)
+    posterior_mm = posterior_ds.open_memmap(interleave="source", writable=True)
+    likelihood_mm = likelihood_ds.open_memmap(interleave="source", writable=True)
+    corr_mm = corr_ds.open_memmap(interleave="source", writable=True)
+
+    # Get reflectance subframe
+    sub_rfl    = np.array(reflectance_mm[r,:,:], dtype='float32')
+    if reflectance_ds.metadata['interleave'] == 'bil':
+        sub_rfl = sub_rfl.T
+
+    # Get input uncertainty
+    sub_uncert = np.array(uncertainty_mm[r,:,:], dtype='float32')
+    if uncertainty_ds.metadata['interleave'] == 'bil':
+        sub_uncert = sub_uncert.T
+
+    # Set-up for parallel.  By convention, we exclude final state
+    # vector uncertainties which are related typically to atmosphere
+    nrfl = sub_rfl.shape[1]
+    sub_data = np.stack((sub_rfl, sub_uncert[:, 0:nrfl]), axis=2)
+
+    results = map(lib.fit, [sub_data[c, :, :] for c in range(sub_data.shape[0])])
+    results = np.asarray(results)
+
+    # Write to output file
+    depth_mm[r,:,:] = results[:, 0, :]
+    posterior_mm[r,:,:] = results[:, 1, :]
+    likelihood_mm[r,:,:] = results[:, 2, :]
+    corr_mm[r,:,:] = results[:, 3, :]
+
+    del reflectance_mm, uncertainty_mm, depth_mm, posterior_mm, likelihood_mm, corr_mm
+
+
 
 def main():
 
@@ -283,15 +322,19 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('config_file')
     parser.add_argument('--level', default='INFO')
+    parser.add_argument('--ip_head',default=None, help='ray-specific argument')
+    parser.add_argument('--redis_password',default=None, help='ray-specific argument')
+    parser.add_argument('--ray_temp_dir',default=None, help='ray-specific argument')
     parser.add_argument('--n_cores', default=-1,help="number of cores to run on. -1 for all, 1 for debug mode")
     args = parser.parse_args()
     logging.basicConfig(format='%(message)s', level=args.level)
 
     # Load a parallel Pool
-    if args.n_cores == -1:
-        pool = mp.Pool(mp.cpu_count())
-    else:
-        pool = mp.Pool(args.n_cores)
+    rayargs = {'address': args.ip_head, 'redis_password': args.redis_password, 
+               'local_mode': args.n_cores == 1}
+    if args.ray_temp_dir is not None:
+        rayargs['temp_dir'] = args.ray_temp_dir
+    ray.init(**rayargs)
 
     # Load the configuration file.
     config = json.load(open(args.config_file, 'r'))
@@ -336,50 +379,8 @@ def main():
     likelihood_ds = envi.create_image(likelihood_output_header,   meta, force=True, ext="")
     corr_ds = envi.create_image(corr_output_header,    meta, force=True, ext="")
 
-    for r in range(reflectance_ds.shape[0]):
-
-        logging.info('Row %i'%r)
-        # We delete the old objects to flush everything to disk, empty cache
-        reflectance_mm = reflectance_ds.open_memmap(interleave="source", writable=False)
-        uncertainty_mm = uncertainty_ds.open_memmap(interleave="source", writable=False)
-        depth_mm = depth_ds.open_memmap(interleave="source", writable=True)
-        posterior_mm = posterior_ds.open_memmap(interleave="source", writable=True)
-        likelihood_mm = likelihood_ds.open_memmap(interleave="source", writable=True)
-        corr_mm = corr_ds.open_memmap(interleave="source", writable=True)
-
-        # Get reflectance subframe
-        sub_rfl    = np.array(reflectance_mm[r,:,:], dtype='float32')
-        if reflectance_ds.metadata['interleave'] == 'bil':
-            sub_rfl = sub_rfl.T
-
-        # Get input uncertainty
-        sub_uncert = np.array(uncertainty_mm[r,:,:], dtype='float32')
-        if uncertainty_ds.metadata['interleave'] == 'bil':
-            sub_uncert = sub_uncert.T
-
-        # Set-up for parallel.  By convention, we exclude final state
-        # vector uncertainties which are related typically to atmosphere
-        nrfl = sub_rfl.shape[1]
-        sub_data = np.stack((sub_rfl, sub_uncert[:, 0:nrfl]), axis=2)
-
-        # Fit in parallel
-        if args.n_cores != 1:
-            results = pool.map(lib.fit, [sub_data[c, :, :] for c in range(sub_data.shape[0])])
-            results = np.asarray(results)
-        else:
-            results = []
-            for c in range(sub_data.shape[0]):
-                temp = lib.fit(sub_data[c,:,:])
-                results.append(temp)
-            results = np.asarray(results)
-
-        # Write to output file
-        depth_mm[r,:,:] = results[:, 0, :]
-        posterior_mm[r,:,:] = results[:, 1, :]
-        likelihood_mm[r,:,:] = results[:, 2, :]
-        corr_mm[r,:,:] = results[:, 3, :]
-
-        del reflectance_mm, uncertainty_mm, depth_mm, posterior_mm, likelihood_mm, corr_mm
+    ids = [run_one_row.remote(r, lib, reflectance_ds, uncertainty_ds, depth_ds, posterior_ds, likelihood_ds, corr_ds) for r in range(reflectance_ds.shape[0])]
+    ray.wait()
 
 
 if __name__ == "__main__":
