@@ -7,17 +7,10 @@
 # export authorization, e.g., a license, license exception or exemption.
 
 from spectral.io import envi
-import sys, argparse, json
-from os import makedirs
-from os.path import join as pathjoin, exists as pathexists
-from scipy.linalg import LinAlgError, eig, svd, inv, block_diag
-from numpy.linalg import slogdet
-from scipy.optimize import least_squares
-from scipy import signal
-from scipy.interpolate import interp1d
-import scipy as sp
+import argparse, json
+import scipy
 from collections import OrderedDict
-from numpy import matmul
+import numpy as np
 import pylab as plt
 import logging
 import pylab as plt
@@ -33,14 +26,14 @@ warnings.filterwarnings("ignore")
 def srf(x, mu, sigma):
     """Spectral Response Function """
     u = (x-mu)/abs(sigma)
-    y = (1.0/(sp.sqrt(2.0*sp.pi)*abs(sigma)))*sp.exp(-u*u/2.0)
+    y = (1.0/(np.sqrt(2.0*np.pi)*abs(sigma)))*np.exp(-u*u/2.0)
     return y/y.sum()
 
 
 def spectrumResample(x, wl, wl2, fwhm2=10, fill=False):
     """Resample a spectrum to a new wavelength / FWHM.
        I assume Gaussian SRFs"""
-    return sp.array([x[sp.newaxis,:] @ srf(wl, wi, fwhmi/2.355)[:,sp.newaxis]
+    return np.array([x[np.newaxis,:] @ srf(wl, wi, fwhmi/2.355)[:,np.newaxis]
                      for wi, fwhmi in zip(wl2, fwhm2)]).reshape((len(wl2)))
 
 
@@ -53,14 +46,14 @@ class LibrarySpectrum():
 
     def __init__(self, config):
         """Parse a configuration object, get spectrum and constraints"""
-        self.wl, self.rfl = sp.loadtxt(config['reflectance_file']).T
+        self.wl, self.rfl = np.loadtxt(config['reflectance_file']).T
         if all(self.wl<100):
             self.wl = self.wl * 1000.0 # convert to nm
         self.rfl = self.rfl.reshape((len(self.rfl),))
         self.group     = config['group']
         self.name      = config['name']
-        self.prior     = sp.array(config['prior'])
-        self.mixing    = sp.array(config['mixing_fraction'])
+        self.prior     = np.array(config['prior'])
+        self.mixing    = np.array(config['mixing_fraction'])
         self.continuua = []
         self.cr        = [] # container for the actual library cr
         for feature in config['features']:
@@ -120,10 +113,10 @@ class LibrarySpectrum():
 
             # Locate continuum
             rctma, rctmb, lctma, lctmb = self.continuua[i]
-            in_rct = sp.logical_and(self.wl>rctma, self.wl<rctmb)
-            in_lct = sp.logical_and(self.wl>lctma, self.wl<lctmb)
-            rctm_idx = int(sp.where(in_rct)[0].mean())
-            lctm_idx = int(sp.where(in_lct)[0].mean())
+            in_rct = np.logical_and(self.wl>rctma, self.wl<rctmb)
+            in_lct = np.logical_and(self.wl>lctma, self.wl<lctmb)
+            rctm_idx = int(np.where(in_rct)[0].mean())
+            lctm_idx = int(np.where(in_lct)[0].mean())
             idx_ctmrm.extend(range(rctm_idx,lctm_idx+1))
             rct = rfl[in_rct].mean()
             lct = rfl[in_lct].mean()
@@ -147,7 +140,7 @@ class LibrarySpectrum():
             # divide by local continuum across this interval
             rfl_ival = rfl[rctm_idx:(lctm_idx+1)]
             n_channels = len(rfl_ival)
-            p = interp1d([0, n_channels-1], [rfl_ival[0], rfl_ival[-1]])
+            p = scipy.interpolate.interp1d([0, n_channels-1], [rfl_ival[0], rfl_ival[-1]])
             ctm = p(range(n_channels))
 
             if plot:
@@ -159,53 +152,53 @@ class LibrarySpectrum():
                 if i==j:
                     rfl_ctmrm[j].extend(rfl_ival/ctm)
                     ctms[j].extend(ctm)
-                    ivals[j].extend(sp.ones(n_channels))
+                    ivals[j].extend(np.ones(n_channels))
                 else:
-                    rfl_ctmrm[j].extend(sp.zeros(n_channels))
-                    ctms[j].extend(sp.zeros(n_channels))
-                    ivals[j].extend(sp.zeros(n_channels))
+                    rfl_ctmrm[j].extend(np.zeros(n_channels))
+                    ctms[j].extend(np.zeros(n_channels))
+                    ivals[j].extend(np.zeros(n_channels))
 
-        return (sp.array(rfl_ctmrm).T, sp.array(ctms).T, sp.array(ivals).T,
+        return (np.array(rfl_ctmrm).T, np.array(ctms).T, np.array(ivals).T,
                 idx_ctmrm)
 
     def fit (self, rfl, uncert, plot=False):
         # Set up matrices
         obs_noise = pow(uncert.copy(), 2)
         if uncert.ndim < 2 or (uncert.shape[0] != uncert.shape[1]):
-            obs_noise = sp.diag(obs_noise)
+            obs_noise = np.diag(obs_noise)
         rfl_ref, ctm_ref, ivals, idx = self.cr
         rfl_test, ctm_test, ivals, idx = self.ctmrm(rfl)
         rfl_test = rfl_test.sum(axis=1)
         ctm_test = ctm_test.sum(axis=1)
 
         # State vector has multipliers, offsets in that order (one per feature)
-        K = sp.concatenate((rfl_ref, ivals), axis=1)
-        offs_prior = sp.eye(ivals.shape[1])
-        S_a = block_diag(self.prior, offs_prior)
-        x_a = sp.zeros(S_a.shape[0])
+        K = np.concatenate((rfl_ref, ivals), axis=1)
+        offs_prior = np.eye(ivals.shape[1])
+        S_a = scipy.linalg.block_diag(self.prior, offs_prior)
+        x_a = np.zeros(S_a.shape[0])
 
         # Input uncertainty treats continuum removal, a linear transformation
         # It currently ignores uncertainty in the continuum placement itself!
-        S_e = sp.array([obs_noise[i, idx] for i in idx])
-        Q   = sp.eye(len(ctm_test)) * (1.0/ctm_test)
+        S_e = np.array([obs_noise[i, idx] for i in idx])
+        Q   = np.eye(len(ctm_test)) * (1.0/ctm_test)
         S_e = Q.T @ S_e @ Q
-        iS_e, iS_a = inv(S_e), inv(S_a)
+        iS_e, iS_a = scipy.linalg.inv(S_e), scipy.linalg.inv(S_a)
 
         # Tikonov solution provides true posteriors
-        x = x_a + inv(K.T @ iS_e @ K + iS_a) @ K.T @ iS_e @ (rfl_test - K @ x_a)
-        S_hat = inv(K.T @ iS_e @ K + iS_a)
+        x = x_a + scipy.linalg.inv(K.T @ iS_e @ K + iS_a) @ K.T @ iS_e @ (rfl_test - K @ x_a)
+        S_hat = scipy.linalg.inv(K.T @ iS_e @ K + iS_a)
         rfl_hat = K @ x
         residual = rfl_hat - rfl_test
-        sign, logdet = slogdet(S_e)
-        Z = len(residual) * sp.log(2*sp.pi) + logdet
+        sign, logdet = np.linalg.slogdet(S_e)
+        Z = len(residual) * np.log(2*np.pi) + logdet
         nll = 0.5 * (residual @ iS_e @ residual + Z)
-        corr = pow(sp.corrcoef(rfl_hat, rfl_test)[0, 1], 2)
+        corr = pow(np.corrcoef(rfl_hat, rfl_test)[0, 1], 2)
 
         # Depth estimate is taken from the most certain measurement
         # In the future consider a Kalman-like update
         coeffs = x[:self.n_intervals]
-        uncerts = sp.sqrt(sp.diag(S_hat))[:self.n_intervals]
-        best = sp.argmin(uncerts)
+        uncerts = np.sqrt(np.diag(S_hat))[:self.n_intervals]
+        best = np.argmin(uncerts)
         depth = coeffs[best]
         post  = uncerts[best]
 
@@ -226,7 +219,7 @@ class Library():
                 else:
                     self.lib[src.group] = [src]
 
-        c, self.wl, self.fwhm = sp.loadtxt(config['wavelength_file']).T
+        c, self.wl, self.fwhm = np.loadtxt(config['wavelength_file']).T
         if all(self.wl < 100):
            self.wl = self.wl * 1000 # convert to nm
            self.fwhm = self.fwhm * 1000
@@ -268,13 +261,13 @@ class Library():
                group_nlls.append(999999)
                group_corrs.append(0)
                continue
-            best_fit_idx = sp.argmin(nlls)
+            best_fit_idx = np.argmin(nlls)
             group_depths.append(depths[best_fit_idx])
             group_posts.append(posts[best_fit_idx])
             group_nlls.append(nlls[best_fit_idx])
             group_corrs.append(corrs[best_fit_idx])
-        return (sp.array(group_depths), sp.array(group_posts),
-                sp.array(group_nlls), sp.array(group_corrs))
+        return (np.array(group_depths), np.array(group_posts),
+                np.array(group_nlls), np.array(group_corrs))
 
     def nchan(self):
         return len(self.lib)
@@ -316,15 +309,15 @@ def main():
 
     # Now that the input images are available, resample wavelengths
     if 'wavelength' in meta:
-        wl = sp.array([float (w) for w in meta['wavelength']])
+        wl = np.array([float (w) for w in meta['wavelength']])
         if all(wl<100): wl = wl * 1000.0
     else:
         wl = lib.wl.copy()
     if 'fwhm' in meta:
-        fwhm = sp.array([float (f) for f in meta['fwhm']])
+        fwhm = np.array([float (f) for f in meta['fwhm']])
         if all(fwhm<0.1): fwhm = fwhm * 1000.0
     else:
-        fwhm = sp.ones(wl.shape) * (wl[1]-wl[0])
+        fwhm = np.ones(wl.shape) * (wl[1]-wl[0])
     lib.resample(wl, fwhm)
 
     # Create output images
@@ -358,29 +351,29 @@ def main():
         cmm = C.open_memmap(interleave="source", writable=True)
 
         # Get reflectance subframe
-        sub_rfl    = sp.array(rmm[r,:,:], dtype='float32')
+        sub_rfl    = np.array(rmm[r,:,:], dtype='float32')
         if R.metadata['interleave'] == 'bil':
             sub_rfl = sub_rfl.T
 
         # Get input uncertainty
-        sub_uncert = sp.array(umm[r,:,:], dtype='float32')
+        sub_uncert = np.array(umm[r,:,:], dtype='float32')
         if U.metadata['interleave'] == 'bil':
             sub_uncert = sub_uncert.T
 
         # Set-up for parallel.  By convention, we exclude final state
         # vector uncertainties which are related typically to atmosphere
         nrfl = sub_rfl.shape[1]
-        sub_data = sp.stack((sub_rfl, sub_uncert[:, 0:nrfl]), axis=2)
+        sub_data = np.stack((sub_rfl, sub_uncert[:, 0:nrfl]), axis=2)
 
         # Perform the fit
-        sub_depth = sp.zeros((sub_rfl.shape[0], lib.nchan()), dtype=sp.float32)
-        sub_post  = sp.zeros((sub_rfl.shape[0], lib.nchan()), dtype=sp.float32)
-        sub_nll   = sp.zeros((sub_rfl.shape[0], lib.nchan()), dtype=sp.float32)
-        sub_corr  = sp.zeros((sub_rfl.shape[0], lib.nchan()), dtype=sp.float32)
+        sub_depth = np.zeros((sub_rfl.shape[0], lib.nchan()), dtype=np.float32)
+        sub_post  = np.zeros((sub_rfl.shape[0], lib.nchan()), dtype=np.float32)
+        sub_nll   = np.zeros((sub_rfl.shape[0], lib.nchan()), dtype=np.float32)
+        sub_corr  = np.zeros((sub_rfl.shape[0], lib.nchan()), dtype=np.float32)
 
         # Fit in parallel
         results = pool.map(lib.fit, [sub_data[c, :, :] for c in range(sub_data.shape[0])])
-        results = sp.asarray(results)
+        results = np.asarray(results)
 
         # For debugging, use this instead:
         '''
@@ -388,7 +381,7 @@ def main():
         for c in range(sub_data.shape[0]):
             temp = lib.fit(sub_data[c,:,:])
             results.append(temp)
-        results = sp.asarray(results)
+        results = np.asarray(results)
         '''
         sub_depth = results[:, 0, :]
         sub_post  = results[:, 1, :]
