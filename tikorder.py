@@ -187,7 +187,7 @@ class LibrarySpectrum():
         iS_e, iS_a = scipy.linalg.inv(S_e), scipy.linalg.inv(S_a)
 
         # Tikonov solution provides true posteriors
-        x = x_a + scipy.linalg.inv(K.T @ iS_e @ K + iS_a) @ K.T @ iS_e @ (rfl_test - K @ x_a)
+        x = x_a + scipy.linalg.inv(K.T @ iS_e @ K + iS_a) @ (K.T @ iS_e @ (rfl_test - K @ x_a))
         S_hat = scipy.linalg.inv(K.T @ iS_e @ K + iS_a)
         rfl_hat = K @ x
         residual = rfl_hat - rfl_test
@@ -278,7 +278,7 @@ class Library():
         return self.lib.keys()
 
 @ray.remote
-def run_one_row(r, lib, reflectance_hdr, uncertainty_hdr, depth_hdr, posterior_hdr, likelihood_hdr, corr_hdr, logfile):
+def run_one_row(r, lib, reflectance_hdr, uncertainty_hdr, depth_hdr, posterior_hdr, likelihood_hdr, corr_hdr):
 
     reflectance_ds = envi.open(reflectance_hdr)
     uncertainty_ds = envi.open(uncertainty_hdr)
@@ -286,7 +286,8 @@ def run_one_row(r, lib, reflectance_hdr, uncertainty_hdr, depth_hdr, posterior_h
     posterior_ds = envi.open(posterior_hdr)
     likelihood_ds = envi.open(likelihood_hdr)
     corr_ds = envi.open(corr_hdr)
-    logging.info('Row %i'%r)
+    #logging.info('Row %i'%r)
+    print(f'Row {r}')
     # We delete the old objects to flush everything to disk, empty cache
     reflectance_mm = reflectance_ds.open_memmap(interleave="source", writable=False)
     uncertainty_mm = uncertainty_ds.open_memmap(interleave="source", writable=False)
@@ -336,13 +337,15 @@ def main():
     parser.add_argument('--ip_head',default=None, help='ray-specific argument')
     parser.add_argument('--redis_password',default=None, help='ray-specific argument')
     parser.add_argument('--ray_temp_dir',default=None, help='ray-specific argument')
-    parser.add_argument('--n_cores', default=-1,help="number of cores to run on. -1 for all, 1 for debug mode")
+    parser.add_argument('--n_cores', type=int, default=-1,help="number of cores to run on. -1 for all, 1 for debug mode")
     args = parser.parse_args()
     logging.basicConfig(format='%(message)s', level=args.level)
 
     # Load a parallel Pool
     rayargs = {'address': args.ip_head, 'redis_password': args.redis_password, 
                'local_mode': args.n_cores == 1}
+    if args.n_cores != -1:
+        rayargs['num_cpus'] = args.n_cores
     if args.ray_temp_dir is not None:
         rayargs['temp_dir'] = args.ray_temp_dir
     ray.init(**rayargs)
@@ -391,7 +394,7 @@ def main():
     corr_ds = envi.create_image(corr_output_header,    meta, force=True, ext="")
 
     ids = [run_one_row.remote(r, lib, reflectance_input_header, uncertainty_input_header, depth_output_header, posterior_output_header, likelihood_output_header, corr_output_header) for r in range(reflectance_ds.shape[0])]
-    ray.wait()
+    ray.wait(ids)
 
 
 if __name__ == "__main__":
