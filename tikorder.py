@@ -9,6 +9,7 @@
 from spectral.io import envi
 import argparse, json
 import scipy
+import scipy.interpolate
 from collections import OrderedDict
 import numpy as np
 import pylab as plt
@@ -127,16 +128,16 @@ class LibrarySpectrum():
             # Check constraints
             if not (rct > self.constraint_ctm_right[i][0] and \
                     rct < self.constraint_ctm_right[i][1]):
-                raise ConstraintViolation('rct = %f'%rct)
+                raise ConstraintViolation(f'{self.name}, rct = {rct}')
             if not (lct > self.constraint_ctm_left[i][0] and \
                     lct < self.constraint_ctm_left[i][1]):
-                raise ConstraintViolation('lct = %f'%rct)
+                raise ConstraintViolation(f'{self.name}, lct = {lct}')
             if not (slope > self.constraint_ctm_slope[i][0] and \
                     slope < self.constraint_ctm_slope[i][1]):
-                raise ConstraintViolation('rct/lct = %f'%slope)
+                raise ConstraintViolation(f'{self.name}, rct/lct = {slope}')
             if not (ct > self.constraint_ctm[i][0] and \
                     ct < self.constraint_ctm[i][1]):
-                raise ConstraintViolation('ct = %f'%ct)
+                raise ConstraintViolation(f'{self.name}, ct = {ct}')
 
             # divide by local continuum across this interval
             rfl_ival = rfl[rctm_idx:(lctm_idx+1)]
@@ -277,7 +278,14 @@ class Library():
         return self.lib.keys()
 
 @ray.remote
-def run_one_row(r, lib, reflectance_ds, uncertainty_ds, depth_ds, posterior_ds, likelihood_ds, corr_ds):
+def run_one_row(r, lib, reflectance_hdr, uncertainty_hdr, depth_hdr, posterior_hdr, likelihood_hdr, corr_hdr, logfile):
+
+    reflectance_ds = envi.open(reflectance_hdr)
+    uncertainty_ds = envi.open(uncertainty_hdr)
+    depth_ds = envi.open(depth_hdr)
+    posterior_ds = envi.open(posterior_hdr)
+    likelihood_ds = envi.open(likelihood_hdr)
+    corr_ds = envi.open(corr_hdr)
     logging.info('Row %i'%r)
     # We delete the old objects to flush everything to disk, empty cache
     reflectance_mm = reflectance_ds.open_memmap(interleave="source", writable=False)
@@ -302,7 +310,10 @@ def run_one_row(r, lib, reflectance_ds, uncertainty_ds, depth_ds, posterior_ds, 
     nrfl = sub_rfl.shape[1]
     sub_data = np.stack((sub_rfl, sub_uncert[:, 0:nrfl]), axis=2)
 
-    results = map(lib.fit, [sub_data[c, :, :] for c in range(sub_data.shape[0])])
+    results = []
+    for c in range(sub_data.shape[0]):
+        temp = lib.fit(sub_data[c,:,:])
+        results.append(temp)
     results = np.asarray(results)
 
     # Write to output file
@@ -379,7 +390,7 @@ def main():
     likelihood_ds = envi.create_image(likelihood_output_header,   meta, force=True, ext="")
     corr_ds = envi.create_image(corr_output_header,    meta, force=True, ext="")
 
-    ids = [run_one_row.remote(r, lib, reflectance_ds, uncertainty_ds, depth_ds, posterior_ds, likelihood_ds, corr_ds) for r in range(reflectance_ds.shape[0])]
+    ids = [run_one_row.remote(r, lib, reflectance_input_header, uncertainty_input_header, depth_output_header, posterior_output_header, likelihood_output_header, corr_output_header) for r in range(reflectance_ds.shape[0])]
     ray.wait()
 
 
