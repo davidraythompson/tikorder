@@ -289,8 +289,8 @@ def run_one_row(r, lib, reflectance_hdr, uncertainty_hdr, depth_hdr, posterior_h
     #logging.info('Row %i'%r)
     print(f'Row {r}')
     # We delete the old objects to flush everything to disk, empty cache
-    reflectance_mm = reflectance_ds.open_memmap(interleave="source", writable=False)
-    uncertainty_mm = uncertainty_ds.open_memmap(interleave="source", writable=False)
+    reflectance_mm = reflectance_ds.open_memmap(interleave="bip", writable=False)
+    uncertainty_mm = uncertainty_ds.open_memmap(interleave="bip", writable=False)
     depth_mm = depth_ds.open_memmap(interleave="source", writable=True)
     posterior_mm = posterior_ds.open_memmap(interleave="source", writable=True)
     likelihood_mm = likelihood_ds.open_memmap(interleave="source", writable=True)
@@ -298,13 +298,9 @@ def run_one_row(r, lib, reflectance_hdr, uncertainty_hdr, depth_hdr, posterior_h
 
     # Get reflectance subframe
     sub_rfl    = np.array(reflectance_mm[r,:,:], dtype='float32')
-    if reflectance_ds.metadata['interleave'] == 'bil':
-        sub_rfl = sub_rfl.T
 
     # Get input uncertainty
     sub_uncert = np.array(uncertainty_mm[r,:,:], dtype='float32')
-    if uncertainty_ds.metadata['interleave'] == 'bil':
-        sub_uncert = sub_uncert.T
 
     # Set-up for parallel.  By convention, we exclude final state
     # vector uncertainties which are related typically to atmosphere
@@ -394,7 +390,7 @@ def main():
     corr_ds = envi.create_image(corr_output_header,    meta, force=True, ext="")
 
     ids = [run_one_row.remote(r, lib, reflectance_input_header, uncertainty_input_header, depth_output_header, posterior_output_header, likelihood_output_header, corr_output_header) for r in range(reflectance_ds.shape[0])]
-    ray.wait(ids)
+    ret = [ray.get(id) for id in ids]
 
 
 if __name__ == "__main__":
