@@ -318,10 +318,10 @@ def run_one_row(r, lib, reflectance_hdr, uncertainty_hdr, depth_hdr, posterior_h
     results = np.asarray(results)
 
     # Write to output file
-    depth_mm[r,:,:] = results[:, 0, :]
-    posterior_mm[r,:,:] = results[:, 1, :]
-    likelihood_mm[r,:,:] = results[:, 2, :]
-    corr_mm[r,:,:] = results[:, 3, :]
+    depth_mm[r,:,:] = results[:, 0, :].copy()
+    posterior_mm[r,:,:] = results[:, 1, :].copy()
+    likelihood_mm[r,:,:] = results[:, 2, :].copy()
+    corr_mm[r,:,:] = results[:, 3, :].copy()
 
     del reflectance_mm, uncertainty_mm, depth_mm, posterior_mm, likelihood_mm, corr_mm
 
